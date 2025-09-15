@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+from matplotlib import animation, patches
 import numpy as np
 import time
 import timeit
@@ -99,25 +100,50 @@ class LQRrrtStar:
         self.step_size = 0.3
         self.plot_pdf_kde = True
 
+        self.obstacle_history = []  # Store obstacle positions over time
+        self.planning_time = 0.0
+        self.dt_per_iteration = 0.05  # Time step per planning iteration
+
+    def update_all_obstacles(self):
+        """Update obstacle lists in all components consistently"""
+        self.lqr_planner.cbf_rrt_simulation.dynamic_obstacles = self.env.dynamic_obs_circle
+        
+        all_circles = self.env.obs_circle.copy()
+        for x, y, r, _, _ in self.env.dynamic_obs_circle:
+            all_circles.append((x, y, r))
+
+        self.lqr_planner.cbf_rrt_simulation.x_obstacle = all_circles
+        self.utils.dynamic_obs_circle = self.env.dynamic_obs_circle
+
     def planning(self):
-        start_time = time.time()
+        initial_dynamic_obs = copy.deepcopy(self.env.dynamic_obs_circle)
         for k in range(self.iter_max):
+            # Update dynamic obstacles every iteration with small time step
+            if len(self.env.dynamic_obs_circle) > 0:
+                # Small time step for smooth motion
+                self.env.update_dynamic_obstacles(self.dt_per_iteration)
+                self.planning_time += self.dt_per_iteration
+                
+                # Update all components with new positions
+                self.update_all_obstacles()
+                
+                # Store history for animation
+                if k % 10 == 0:
+                    self.obstacle_history.append({
+                        'iteration': k,
+                        'time': self.planning_time,
+                        'positions': copy.deepcopy(self.env.dynamic_obs_circle)
+                    })
+
+            # Generate random node
             node_rand = self.generate_random_node(self.goal_sample_rate)
             node_near = self.nearest_neighbor(self.vertex, node_rand)
             node_new = self.LQR_steer(node_near, node_rand)
 
             if k % 100 == 0:
-                print("rrtStar sampling iterations: ", k)
-                print(
-                    "rrtStar 1000 iterations sampling time: ", time.time() - start_time
-                )
-                start_time = time.time()
+                print(f"Iteration: {k}")
 
-            if k % 1000 == 0:
-                print("rrtStar sampling iterations: ", k)
-                self.plotting.animation_online(self.vertex, "rrtStar", False)
-
-            if node_new and not self.utils.is_collision(node_near, node_new):
+            if node_new and not self.utils.is_collision_with_dynamic(node_near, node_new):
                 neighbor_index = self.find_near_neighbor(node_new)
                 self.vertex.append(node_new)
 
@@ -125,11 +151,8 @@ class LQRrrtStar:
                     self.LQR_choose_parent(node_new, neighbor_index)
                     self.rewire(node_new, neighbor_index)
 
-            # >>> Extend to the goal
-            if self.AdSamplingFlag:
-                # Steering to the goal region:
-                if node_new is None:
-                    continue
+            # Adaptive sampling extension to goal
+            if self.AdSamplingFlag and node_new is not None:
                 r_num = np.random.uniform(0, 1) > 0.5
                 if r_num:
                     s_node_dap, g_node_adap = self.s_goal, node_new
@@ -169,8 +192,10 @@ class LQRrrtStar:
         final_cost = self.path_cost(self.path)
         print("optimal distance cost", final_cost)
 
-        self.plotting.animation(
-            self.vertex, self.path, "rrt*, N = " + str(self.iter_max)
+        self.plotting.animation_dynamic(
+            self,
+            "LQR-CBF-RRT* with Dynamic Obstacles",
+            initial_dynamic_obs
         )
 
     def sample_path(self, wx, wy, u_sequence, step=0.2):
@@ -213,6 +238,7 @@ class LQRrrtStar:
             show_animation=show_animation,
             solve_QP=self.solve_QP,
         )
+
         px, py, traj_cost, u_sequence_cost = self.sample_path(wx, wy, u_sequence)
 
         if len(wx) == 1:
@@ -261,7 +287,7 @@ class LQRrrtStar:
                 solve_QP=self.solve_QP,
             )
 
-            if can_reach and not self.utils.is_collision(
+            if can_reach and not self.utils.is_collision_with_dynamic(
                 self.vertex[i], node_new
             ):  # collision check should be updated if using CBF
                 update_cost, _, u_sequence = self.cal_LQR_new_cost(
@@ -291,7 +317,7 @@ class LQRrrtStar:
             node_neighbor = self.vertex[i]
 
             # check collision and LQR reachabilty
-            if not self.utils.is_collision(node_new, node_neighbor):
+            if not self.utils.is_collision_with_dynamic(node_new, node_neighbor):
                 new_cost, can_rach, u_sequence = self.cal_LQR_new_cost(
                     node_new, node_neighbor
                 )
@@ -325,7 +351,7 @@ class LQRrrtStar:
             cost_list = [
                 dist_list[i] + self.vertex[i].cost
                 for i in node_index
-                if not self.utils.is_collision(self.vertex[i], self.s_goal)
+                if not self.utils.is_collision_with_dynamic(self.vertex[i], self.s_goal)
             ]
             return node_index[int(np.argmin(cost_list))]
 
@@ -573,7 +599,7 @@ class LQRrrtStar:
             ind
             for ind in range(len(dist_table))
             if dist_table[ind] <= r
-            and not self.utils.is_collision(node_new, self.vertex[ind])
+            and not self.utils.is_collision_with_dynamic(node_new, self.vertex[ind])
         ]
         return dist_table_index
 
@@ -612,14 +638,22 @@ class LQRrrtStar:
         dy = node_end.y - node_start.y
         return math.hypot(dx, dy), math.atan2(dy, dx)
 
-
 def main():
-    # x_start = (18, 8)  # Starting node
-    # x_goal = (37, 18)  # Goal node
-    x_start = (2, 2)  # Starting node
-    x_goal = (30, 24)  # Goal node
+    x_start = (2, 2)
+    x_goal = (45, 24)
 
-    rrt_star = LQRrrtStar(x_start, x_goal, 10, 0.10, 20, 2000, AdSamplingFlag=False)
+    # Create planner
+    rrt_star = LQRrrtStar(
+        x_start, x_goal, 
+        step_len=10, 
+        goal_sample_rate=0.10, 
+        search_radius=20, 
+        iter_max=3000, 
+        AdSamplingFlag=False,
+        solve_QP=False  # Set to True to use QP solver
+    )
+
+    # Plan path
     rrt_star.planning()
 
 

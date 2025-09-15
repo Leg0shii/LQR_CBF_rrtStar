@@ -15,6 +15,7 @@ class Utils:
         self.obs_circle = self.env.obs_circle
         self.obs_rectangle = self.env.obs_rectangle
         self.obs_boundary = self.env.obs_boundary
+        self.dynamic_obs_circle = self.env.dynamic_obs_circle
 
     def update_obs(self, obs_cir, obs_bound, obs_rec):
         self.obs_circle = obs_cir
@@ -94,6 +95,58 @@ class Utils:
             if self.is_intersect_circle(o, d, [x, y], r):
                 return True
 
+        return False
+    
+    def is_collision_with_dynamic(self, node_start, node_end):
+        """Check collision including dynamic obstacles with prediction"""
+        # Check static obstacles
+        if self.is_collision(node_start, node_end):
+            return True
+        
+        # Check dynamic obstacles with prediction
+        dist = math.hypot(node_end.x - node_start.x, node_end.y - node_start.y)
+        traverse_time = dist / 5.0  # Assuming average speed
+        
+        for x, y, r, vx, vy in self.env.dynamic_obs_circle:
+            # Predict obstacle position
+            x_pred = x + vx * traverse_time
+            y_pred = y + vy * traverse_time
+            
+            safety_margin = 0.5
+            if self.check_line_circle_collision(
+                node_start.x, node_start.y, 
+                node_end.x, node_end.y,
+                x_pred, y_pred, r + safety_margin
+            ):
+                return True
+        
+        return False
+
+    def check_line_circle_collision(self, x1, y1, x2, y2, cx, cy, r):
+        """Check if line segment collides with circle"""
+        # Vector from start to end
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        # Vector from start to circle center
+        fx = x1 - cx
+        fy = y1 - cy
+        
+        a = dx * dx + dy * dy
+        b = 2 * (fx * dx + fy * dy)
+        c = (fx * fx + fy * fy) - r * r
+        
+        discriminant = b * b - 4 * a * c
+        if discriminant < 0:
+            return False
+        
+        discriminant = math.sqrt(discriminant)
+        t1 = (-b - discriminant) / (2 * a)
+        t2 = (-b + discriminant) / (2 * a)
+        
+        if (0 <= t1 <= 1) or (0 <= t2 <= 1):
+            return True
+        
         return False
 
     def is_inside_obs(self, node):

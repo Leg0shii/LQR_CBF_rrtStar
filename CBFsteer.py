@@ -53,14 +53,14 @@ def fun_derivative_trajectory(x, dx, f, gradf):
 
 
 class CBF_RRT:
-    def __init__(self, obstacle_list):
+    def __init__(self, obstacle_list, dynamic_obstacle_list):
         self.t0 = 0  # Starting time
         self.T = 0.2  # Integration Length
         self.N = 50  # Number of Control Updates
         # self.y0 = initial_state
         self.k = 6  # k nearest neighbor obstacles that will be used for generating CBF constraint
-        self.cbf_constraints_sensing_radius = 20
-        self.k_cbf = 2.0  # CBF coefficient for double intergrators
+        self.cbf_constraints_sensing_radius = 10
+        self.k_cbf = 1.0  # CBF coefficient for double intergrators
         self.k_cbf2 = (
             1.0  # CBF coefficient for double intergrators, If acceleration is used
         )
@@ -86,6 +86,8 @@ class CBF_RRT:
         self.cbf_traj = np.zeros(shape=(0, 0))
         self.hdot_traj = np.zeros(shape=(0, 0))
         self.h_traj = np.zeros(shape=(0, 0))
+
+        self.dynamic_obstacles = dynamic_obstacle_list
 
     def set_initial_state(self, initial_state):
         self.y0 = initial_state
@@ -483,6 +485,60 @@ class CBF_RRT:
                 if minCBF < 0:
                     return False
 
+        return True
+
+    def QP_constraint_with_prediction(self, x_current, u_ref, dt_horizon=0.5):
+        """Check CBF constraints with obstacle position prediction"""
+        x1, x2 = x_current[0], x_current[1]
+        u1_ref = np.clip(u_ref[0, 0] if isinstance(u_ref[0], np.ndarray) else u_ref[0], self.u1_lower_lim, self.u1_upper_lim)
+        u2_ref = np.clip(u_ref[1, 0] if isinstance(u_ref[1], np.ndarray) else u_ref[1], self.u2_lower_lim, self.u2_upper_lim)
+
+        obstacle_index = self.find_obstacles_within_cbf_sensing_range(x_current, self.x_obstacle)
+        
+        if obstacle_index:
+            for index in obstacle_index:
+                h = ((x1 - self.x_obstacle[index][0]) ** 2 + (x2 - self.x_obstacle[index][1]) ** 2 - self.x_obstacle[index][2] ** 2)
+                h_dot = (2 * (x1 - self.x_obstacle[index][0]) * u1_ref + 2 * (x2 - self.x_obstacle[index][1]) * u2_ref)
+                
+                cbf_constraint = h_dot + self.k_cbf * h
+                
+                if cbf_constraint < 0:
+                    return False
+
+        # Check dynamic obstacles with prediction
+        for dyn_obs in self.dynamic_obstacles:
+            if len(dyn_obs) >= 5:
+                x_obs, y_obs, r, vx, vy = dyn_obs[0], dyn_obs[1], dyn_obs[2], dyn_obs[3], dyn_obs[4]
+                
+                # Only check if obstacle is within sensing range
+                current_dist = np.sqrt((x1 - x_obs)**2 + (x2 - y_obs)**2)
+                if current_dist > self.cbf_constraints_sensing_radius:
+                    continue  # Skip distant obstacles
+                
+                # Check current position and near future
+                for t_check in [0, dt_horizon/3, dt_horizon]:
+                    x_obs_pred = x_obs + vx * t_check
+                    y_obs_pred = y_obs + vy * t_check
+                    
+                    x_robot_pred = x1 + u1_ref * t_check
+                    y_robot_pred = x2 + u2_ref * t_check
+                    
+                    # Smaller safety margin
+                    rel_speed = np.sqrt((u1_ref - vx)**2 + (u2_ref - vy)**2)
+                    safety_margin = min(0.1 + 0.1 * rel_speed * t_check, 0.5)
+                    
+                    h = ((x_robot_pred - x_obs_pred)**2 + (y_robot_pred - y_obs_pred)**2 - (r + safety_margin)**2)
+                    
+                    # Only enforce if we're getting close
+                    if h < r**2:  # Within danger zone
+                        h_dot = (2*(x_robot_pred - x_obs_pred)*(u1_ref - vx) + 
+                                2*(y_robot_pred - y_obs_pred)*(u2_ref - vy))
+                        
+                        cbf_constraint = h_dot + self.k_cbf * h
+                        
+                        if cbf_constraint < 0:
+                            return False
+        
         return True
 
     def motion_planning_without_QP(self, u_ref, model="linear_velocity_control"):

@@ -31,7 +31,8 @@ class LQRPlanner:
         self.obs_rectangle = self.env.obs_rectangle
         self.obs_boundary = self.env.obs_boundary
 
-        self.cbf_rrt_simulation = CBF_RRT(self.obs_circle)
+        self.dynamic_obstacles = self.env.dynamic_obs_circle
+        self.cbf_rrt_simulation = CBF_RRT(self.obs_circle, self.dynamic_obstacles)
 
     def lqr_planning(
         self,
@@ -63,10 +64,11 @@ class LQRPlanner:
 
             # check if LQR control is safe with respect to CBF constraint
             if cbf_check and not test_LQR and not solve_QP:
-                if not self.cbf_rrt_simulation.QP_constraint(
-                    [x[0, 0] + gx, x[1, 0] + gy], u
+                current_pos = [rx[-1], ry[-1]]
+                if not self.cbf_rrt_simulation.QP_constraint_with_prediction(
+                    current_pos, u
                 ):
-                    print("CBF constraint violated")
+                    # print("CBF constraint violated")
                     break
 
             u_sequence.append(u)
