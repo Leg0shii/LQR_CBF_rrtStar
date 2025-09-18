@@ -38,6 +38,15 @@ class Env:
         all_circles.extend([(x, y, r) for x, y, r, _, _ in self.dynamic_obs_circle])
         return all_circles, self.obs_rectangle, self.obs_boundary
     
+    def get_predicted_obstacles(self, time_ahead):
+        """Get predicted positions of dynamic obstacles at future time"""
+        predicted_dynamic = []
+        for x, y, r, vx, vy in self.dynamic_obs_circle:
+            pred_x = x + vx * time_ahead
+            pred_y = y + vy * time_ahead
+            predicted_dynamic.append((pred_x, pred_y, r, vx, vy))
+        return predicted_dynamic
+    
     @staticmethod
     def get_dynamic_obs_circle():
         dynamic_obs_circle = [

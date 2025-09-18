@@ -97,55 +97,45 @@ class Utils:
 
         return False
     
-    def is_collision_with_dynamic(self, node_start, node_end):
-        """Check collision including dynamic obstacles with prediction"""
-        # Check static obstacles
+    def is_collision_with_dynamic_predicted(self, node_start, node_end, initial_dynamic_obstacles):
+        """Check collision with moving obstacles using prediction from initial positions"""
+        # Check static obstacles first
         if self.is_collision(node_start, node_end):
             return True
         
-        # Check dynamic obstacles with prediction
-        dist = math.hypot(node_end.x - node_start.x, node_end.y - node_start.y)
-        traverse_time = dist / 5.0  # Assuming average speed
-        
-        for x, y, r, vx, vy in self.env.dynamic_obs_circle:
-            # Predict obstacle position
-            x_pred = x + vx * traverse_time
-            y_pred = y + vy * traverse_time
-            
-            safety_margin = 0.5
-            if self.check_line_circle_collision(
-                node_start.x, node_start.y, 
-                node_end.x, node_end.y,
-                x_pred, y_pred, r + safety_margin
-            ):
-                return True
-        
-        return False
-
-    def check_line_circle_collision(self, x1, y1, x2, y2, cx, cy, r):
-        """Check if line segment collides with circle"""
-        # Vector from start to end
-        dx = x2 - x1
-        dy = y2 - y1
-        
-        # Vector from start to circle center
-        fx = x1 - cx
-        fy = y1 - cy
-        
-        a = dx * dx + dy * dy
-        b = 2 * (fx * dx + fy * dy)
-        c = (fx * fx + fy * fy) - r * r
-        
-        discriminant = b * b - 4 * a * c
-        if discriminant < 0:
+        if not initial_dynamic_obstacles:
             return False
         
-        discriminant = math.sqrt(discriminant)
-        t1 = (-b - discriminant) / (2 * a)
-        t2 = (-b + discriminant) / (2 * a)
+        # Get actual times from nodes
+        t_start = node_start.time if hasattr(node_start, 'time') else 0.0
+        t_end = node_end.time if hasattr(node_end, 'time') else t_start + 0.1
         
-        if (0 <= t1 <= 1) or (0 <= t2 <= 1):
-            return True
+        if t_end <= t_start:
+            dist = math.hypot(node_end.x - node_start.x, node_end.y - node_start.y)
+            t_end = t_start + dist / 5.0
+        
+        # Sample along the path
+        num_samples = 20
+        for s in np.linspace(0, 1, num_samples):
+            # Interpolate position and time
+            t = t_start + s * (t_end - t_start)
+            x = node_start.x + s * (node_end.x - node_start.x)
+            y = node_start.y + s * (node_end.y - node_start.y)
+            
+            # Check each dynamic obstacle at time t
+            for obs in initial_dynamic_obstacles:
+                if len(obs) >= 5:
+                    x_obs_0, y_obs_0, r, vx, vy = obs[:5]
+                    # Predict obstacle position from INITIAL position at time t
+                    x_obs = x_obs_0 + vx * t
+                    y_obs = y_obs_0 + vy * t
+
+                    speed = math.sqrt(vx**2 + vy**2)
+                    safety_margin = 1.0 + 0.3 * speed
+                    
+                    dist = math.hypot(x - x_obs, y - y_obs)
+                    if dist < r + safety_margin:  # Safety margin
+                        return True
         
         return False
 

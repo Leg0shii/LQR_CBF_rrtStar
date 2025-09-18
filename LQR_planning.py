@@ -44,6 +44,8 @@ class LQRPlanner:
         show_animation=True,
         cbf_check=True,
         solve_QP=False,
+        current_time=0.0,
+        time_horizon=0.5
     ):
 
         self.cbf_rrt_simulation.set_initial_state(np.array([[sx], [sy]]))
@@ -55,18 +57,17 @@ class LQRPlanner:
         x = np.array([sx - gx, sy - gy]).reshape(2, 1)  # State vector
 
         found_path = False
-
         time = 0.0
+
         while time <= self.MAX_TIME:
             time += self.DT
-
             u = self.K @ x
 
             # check if LQR control is safe with respect to CBF constraint
             if cbf_check and not test_LQR and not solve_QP:
                 current_pos = [rx[-1], ry[-1]]
                 if not self.cbf_rrt_simulation.QP_constraint_with_prediction(
-                    current_pos, u
+                    current_pos, u, dt_horizon=current_time + time
                 ):
                     # print("CBF constraint violated")
                     break

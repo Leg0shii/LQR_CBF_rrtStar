@@ -172,6 +172,11 @@ class Plotting:
         time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes)
         collision_text = ax.text(0.02, 0.90, '', transform=ax.transAxes, color='red')
 
+        print(f"Path length: {len(path)}")
+        if path:
+            print(f"Path element structure: {path[0]}")
+            print(f"Path starts at: {path[-1]}, ends at: {path[0]}")
+
         def update(frame):
             current_time = frame * 0.05
             time_text.set_text(f'Time = {current_time:.2f}s')
@@ -179,36 +184,32 @@ class Plotting:
             # Move robot along path
             if path and robot_circle:
                 path_reversed = path[::-1]
-                total_frames = 200
-                progress = min(frame / total_frames * len(path_reversed),len(path_reversed) - 1)
-                idx = int(progress)
+                robot_x, robot_y = path_reversed[0][0], path_reversed[0][1]
+
+                for i in range(len(path_reversed) - 1):
+                    # If path has time info (3 elements), use it
+                    if len(path_reversed[i]) >= 3:
+                        t1 = path_reversed[i][2]
+                        t2 = path_reversed[i+1][2]
+                        
+                        if t1 <= current_time <= t2:
+                            # Interpolate between nodes based on time
+                            alpha = (current_time - t1) / (t2 - t1) if t2 != t1 else 0
+                            robot_x = path_reversed[i][0] * (1-alpha) + path_reversed[i+1][0] * alpha
+                            robot_y = path_reversed[i][1] * (1-alpha) + path_reversed[i+1][1] * alpha
+                            break
+                        elif current_time > t2:
+                            robot_x = path_reversed[i+1][0]
+                            robot_y = path_reversed[i+1][1]
                 
-                if idx < len(path_reversed) - 1:
-                    alpha = progress - idx
-                    robot_x = path_reversed[idx][0] * (1-alpha) + path_reversed[idx+1][0] * alpha
-                    robot_y = path_reversed[idx][1] * (1-alpha) + path_reversed[idx+1][1] * alpha
-                    robot_circle.center = (robot_x, robot_y)
-                else:
-                    robot_x = path_reversed[-1][0]
-                    robot_y = path_reversed[-1][1]
-                    robot_circle.center = (robot_x, robot_y)
+                robot_circle.center = (robot_x, robot_y)
             
             # Use stored obstacle positions if available, otherwise simulate
-            if rrt_star.obstacle_history:
-                # Find closest stored position
-                hist_idx = min(int(frame * len(rrt_star.obstacle_history) / 200), len(rrt_star.obstacle_history) - 1)
-                if hist_idx < len(rrt_star.obstacle_history):
-                    current_positions = rrt_star.obstacle_history[hist_idx]['positions']
-                    for i, (x, y, r, vx, vy) in enumerate(current_positions):
-                        if i < len(dynamic_circles):
-                            dynamic_circles[i].center = (x, y)
-            else:
-                # Fallback to simple simulation
-                for i, (x, y, r, vx, vy) in enumerate(dynamic_obs_initial):
-                    new_x = x + vx * current_time
-                    new_y = y + vy * current_time
-                    if i < len(dynamic_circles):
-                        dynamic_circles[i].center = (new_x, new_y)
+            for i, (x0, y0, r, vx, vy) in enumerate(dynamic_obs_initial):
+                new_x = x0 + vx * current_time
+                new_y = y0 + vy * current_time
+                if i < len(dynamic_circles):
+                    dynamic_circles[i].center = (new_x, new_y)
             
             # Check collisions visually
             collision_detected = False
@@ -231,6 +232,6 @@ class Plotting:
             
             return [robot_circle, time_text, collision_text] + dynamic_circles
 
-        anim = animation.FuncAnimation(fig, update, frames=200, interval=50, blit=True, repeat=True)
+        anim = animation.FuncAnimation(fig, update, frames=600, interval=50, blit=True, repeat=True)
         plt.show()
         return anim

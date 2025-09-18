@@ -490,9 +490,18 @@ class CBF_RRT:
     def QP_constraint_with_prediction(self, x_current, u_ref, dt_horizon=0.5):
         """Check CBF constraints with obstacle position prediction"""
         x1, x2 = x_current[0], x_current[1]
-        u1_ref = np.clip(u_ref[0, 0] if isinstance(u_ref[0], np.ndarray) else u_ref[0], self.u1_lower_lim, self.u1_upper_lim)
-        u2_ref = np.clip(u_ref[1, 0] if isinstance(u_ref[1], np.ndarray) else u_ref[1], self.u2_lower_lim, self.u2_upper_lim)
-
+        
+        # Handle both matrix and scalar forms
+        if isinstance(u_ref, np.ndarray):
+            u1_ref = u_ref[0, 0] if u_ref.ndim > 1 else u_ref[0]
+            u2_ref = u_ref[1, 0] if u_ref.ndim > 1 else u_ref[1]
+        else:
+            u1_ref, u2_ref = u_ref[0], u_ref[1]
+        
+        u1_ref = np.clip(u1_ref, self.u1_lower_lim, self.u1_upper_lim)
+        u2_ref = np.clip(u2_ref, self.u2_lower_lim, self.u2_upper_lim)
+        
+        # Check static obstacles
         obstacle_index = self.find_obstacles_within_cbf_sensing_range(x_current, self.x_obstacle)
         
         if obstacle_index:
@@ -500,44 +509,22 @@ class CBF_RRT:
                 h = ((x1 - self.x_obstacle[index][0]) ** 2 + (x2 - self.x_obstacle[index][1]) ** 2 - self.x_obstacle[index][2] ** 2)
                 h_dot = (2 * (x1 - self.x_obstacle[index][0]) * u1_ref + 2 * (x2 - self.x_obstacle[index][1]) * u2_ref)
                 
-                cbf_constraint = h_dot + self.k_cbf * h
-                
-                if cbf_constraint < 0:
+                if h_dot + self.k_cbf * h < 0:
                     return False
-
-        # Check dynamic obstacles with prediction
-        for dyn_obs in self.dynamic_obstacles:
+        
+        # Check dynamic obstacles with better prediction
+        for dyn_obs in self.dynamic_obstacles:  # These should be initial positions!
             if len(dyn_obs) >= 5:
-                x_obs, y_obs, r, vx, vy = dyn_obs[0], dyn_obs[1], dyn_obs[2], dyn_obs[3], dyn_obs[4]
+                x_obs_0, y_obs_0, r, vx, vy = dyn_obs[:5]
                 
-                # Only check if obstacle is within sensing range
-                current_dist = np.sqrt((x1 - x_obs)**2 + (x2 - y_obs)**2)
-                if current_dist > self.cbf_constraints_sensing_radius:
-                    continue  # Skip distant obstacles
+                # Predict where obstacle will be at time dt_horizon
+                x_obs = x_obs_0 + vx * dt_horizon
+                y_obs = y_obs_0 + vy * dt_horizon
                 
-                # Check current position and near future
-                for t_check in [0, dt_horizon/3, dt_horizon]:
-                    x_obs_pred = x_obs + vx * t_check
-                    y_obs_pred = y_obs + vy * t_check
-                    
-                    x_robot_pred = x1 + u1_ref * t_check
-                    y_robot_pred = x2 + u2_ref * t_check
-                    
-                    # Smaller safety margin
-                    rel_speed = np.sqrt((u1_ref - vx)**2 + (u2_ref - vy)**2)
-                    safety_margin = min(0.1 + 0.1 * rel_speed * t_check, 0.5)
-                    
-                    h = ((x_robot_pred - x_obs_pred)**2 + (y_robot_pred - y_obs_pred)**2 - (r + safety_margin)**2)
-                    
-                    # Only enforce if we're getting close
-                    if h < r**2:  # Within danger zone
-                        h_dot = (2*(x_robot_pred - x_obs_pred)*(u1_ref - vx) + 
-                                2*(y_robot_pred - y_obs_pred)*(u2_ref - vy))
-                        
-                        cbf_constraint = h_dot + self.k_cbf * h
-                        
-                        if cbf_constraint < 0:
-                            return False
+                # Check if we would collide
+                dist = math.hypot(x1 - x_obs, x2 - y_obs)
+                if dist < r + 1.5:  # Safety margin
+                    return False
         
         return True
 
