@@ -605,16 +605,40 @@ class LQRrrtStar:
         ]
 
     def extract_path(self, node_end):
-        path = [[self.s_goal.x, self.s_goal.y, node_end.time]]
+        path = []
         u_path = []
         node = node_end
-
+        
+        # Start with goal position
+        path.append([self.s_goal.x, self.s_goal.y, node_end.time if node_end else 0])
+        
+        # Collect all StateTraj points from goal back to start
         while node.parent is not None:
-            path.append([node.x, node.y, node.time])
+            if node.StateTraj is not None and len(node.StateTraj) > 0:
+                # StateTraj is np.array([px, py]) where px and py are lists of points
+                px, py = node.StateTraj[0], node.StateTraj[1]
+                
+                # Calculate time increment for each point in trajectory
+                time_start = node.parent.time if node.parent else 0
+                time_end = node.time
+                num_points = len(px)
+                
+                # Add all trajectory points (in reverse order since we're going backwards)
+                for i in range(len(px)-1, -1, -1):
+                    # Interpolate time for this point
+                    t = time_start + (time_end - time_start) * (i / max(num_points-1, 1))
+                    path.append([px[i], py[i], t])
+            else:
+                # Fallback to just node position if no StateTraj
+                path.append([node.x, node.y, node.time])
+            
             u_path.extend(node.u_parent_to_current)
             node = node.parent
-        path.append([node.x, node.y, node.time])
-
+        
+        # Add start position
+        if node:
+            path.append([node.x, node.y, node.time])
+        
         return path, u_path[::-1]
 
     @staticmethod
@@ -643,7 +667,7 @@ def main():
         step_len=10, 
         goal_sample_rate=0.10, 
         search_radius=20, 
-        iter_max=7500, 
+        iter_max=2000, 
         AdSamplingFlag=False,
         solve_QP=False  # Set to True to use QP solver
     )
