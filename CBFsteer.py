@@ -513,7 +513,7 @@ class CBF_RRT:
                     return False
         
         # Check dynamic obstacles with better prediction
-        for dyn_obs in self.dynamic_obstacles:  # These should be initial positions!
+        for dyn_obs in self.dynamic_obstacles:
             if len(dyn_obs) >= 5:
                 x_obs_0, y_obs_0, r, vx, vy = dyn_obs[:5]
                 
@@ -523,7 +523,7 @@ class CBF_RRT:
                 
                 # Check if we would collide
                 dist = math.hypot(x1 - x_obs, x2 - y_obs)
-                if dist < r + 1.5:  # Safety margin
+                if dist < r + 1.5:
                     return False
         
         return True

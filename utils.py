@@ -99,7 +99,6 @@ class Utils:
     
     def is_collision_with_dynamic_predicted(self, node_start, node_end, initial_dynamic_obstacles):
         """Check collision with moving obstacles using prediction from initial positions"""
-        # Check static obstacles first
         if self.is_collision(node_start, node_end):
             return True
         
@@ -126,7 +125,7 @@ class Utils:
             for obs in initial_dynamic_obstacles:
                 if len(obs) >= 5:
                     x_obs_0, y_obs_0, r, vx, vy = obs[:5]
-                    # Predict obstacle position from INITIAL position at time t
+                    
                     x_obs = x_obs_0 + vx * t
                     y_obs = y_obs_0 + vy * t
 
@@ -134,7 +133,7 @@ class Utils:
                     safety_margin = 1.0 + 0.3 * speed
                     
                     dist = math.hypot(x - x_obs, y - y_obs)
-                    if dist < r + safety_margin:  # Safety margin
+                    if dist < r + safety_margin:
                         return True
         
         return False

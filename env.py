@@ -50,28 +50,24 @@ class Env:
     @staticmethod
     def get_dynamic_obs_circle():
         dynamic_obs_circle = [
-            # Original obstacles (with your speeds)
-            (8, 5, 2, 0.2, 2.5),       # Near start - slow horizontal, fast vertical
-            (20, 10, 2, -0.1, 6.0),    # Middle - very fast vertical
-            (30, 15, 2, 0.1, -2.5),    # Center-right - fast downward
-            (40, 20, 2, -0.2, 2.5),    # Near goal - fast upward
-            (25, 8, 2, 0.15, 4.75),    # Lower middle - very fast upward
+            (8, 5, 2, 0.2, 2.5),
+            (20, 10, 2, -0.1, 6.0),
+            (30, 15, 2, 0.1, -2.5),
+            (40, 20, 2, -0.2, 2.5),
+            (25, 8, 2, 0.15, 4.75),
             
-            # New slower obstacles
-            (12, 20, 1.5, 0.3, -0.2),  # Small, slow drift
-            (35, 5, 2.5, -0.15, 0.1),  # Large, slow diagonal
-            (5, 15, 2, 0.0, 0.4),      # Vertical only, slow
-            (45, 15, 1.8, -0.25, 0.0), # Horizontal only, slow
+            (12, 20, 1.5, 0.3, -0.2),
+            (35, 5, 2.5, -0.15, 0.1),
+            (5, 15, 2, 0.0, 0.4),
+            (45, 15, 1.8, -0.25, 0.0),
             
-            # New medium-speed obstacles
-            (18, 25, 2, 0.5, -1.0),    # Upper area, medium diagonal
-            (32, 22, 1.5, -0.8, -0.8), # Medium diagonal down-left
-            (10, 10, 2, 1.0, 0.0),     # Medium horizontal only
+            (18, 25, 2, 0.5, -1.0),
+            (32, 22, 1.5, -0.8, -0.8),
+            (10, 10, 2, 1.0, 0.0),
             
-            # New fast obstacles
-            (22, 5, 1.5, 0.0, 3.5),    # Fast vertical riser
-            (38, 18, 1.8, -2.0, -1.5), # Fast diagonal
-            (15, 22, 2, 1.5, -2.0),    # Fast diagonal crossing
+            (22, 5, 1.5, 0.0, 3.5),
+            (38, 18, 1.8, -2.0, -1.5),
+            (15, 22, 2, 1.5, -2.0),
         ]
         return dynamic_obs_circle
 

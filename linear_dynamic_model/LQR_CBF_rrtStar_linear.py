@@ -101,19 +101,14 @@ class LQRrrtStar:
         self.step_size = 0.3
         self.plot_pdf_kde = True
 
-        self.initial_dynamic_obs = []
-        self.obstacle_history = []  # Store obstacle positions over time
+        self.initial_dynamic_obs = copy.deepcopy(self.env.dynamic_obs_circle)
+        self.lqr_planner.cbf_rrt_simulation.dynamic_obstacles = self.initial_dynamic_obs
+        self.utils.dynamic_obs_circle = self.initial_dynamic_obs
+        
         self.planning_time = 0.0
         self.dt_per_iteration = 0.05  # Time step per planning iteration
 
     def planning(self):
-        initial_dynamic_obs = copy.deepcopy(self.env.dynamic_obs_circle)
-        self.initial_dynamic_obs = initial_dynamic_obs
-        
-        # Set initial dynamic obstacles in components ONCE at the beginning
-        self.lqr_planner.cbf_rrt_simulation.dynamic_obstacles = self.initial_dynamic_obs
-        self.utils.dynamic_obs_circle = self.initial_dynamic_obs
-
         for k in range(self.iter_max):
             self.planning_time += self.dt_per_iteration
 
@@ -184,7 +179,7 @@ class LQRrrtStar:
         self.plotting.animation_dynamic(
             self,
             "LQR-CBF-RRT* with Dynamic Obstacles",
-            initial_dynamic_obs
+            self.initial_dynamic_obs
         )
 
     def sample_path(self, wx, wy, u_sequence, step=0.2):
@@ -201,6 +196,9 @@ class LQRrrtStar:
             for t in np.arange(0.0, 1.0, step):
                 px.append(t * wx[i + 1] + (1.0 - t) * wx[i])
                 py.append(t * wy[i + 1] + (1.0 - t) * wy[i])
+
+        px.append(wx[-1])
+        py.append(wy[-1])
 
         dx, dy = np.diff(px), np.diff(py)
         u_sequence_cost = sum([np.linalg.norm(u) for u in u_sequence_list])
@@ -609,33 +607,31 @@ class LQRrrtStar:
         u_path = []
         node = node_end
         
-        # Start with goal position
-        path.append([self.s_goal.x, self.s_goal.y, node_end.time if node_end else 0])
+        path.append([self.s_goal.x, self.s_goal.y, node_end.time + 1.0])
         
-        # Collect all StateTraj points from goal back to start
+        num_interp_points = 20
+        for i in range(num_interp_points, 0, -1):
+            alpha = i / float(num_interp_points)
+            x_interp = node_end.x * alpha + self.s_goal.x * (1 - alpha)
+            y_interp = node_end.y * alpha + self.s_goal.y * (1 - alpha)
+            t_interp = node_end.time + (1 - alpha)
+            path.append([x_interp, y_interp, t_interp])
+        
         while node.parent is not None:
             if node.StateTraj is not None and len(node.StateTraj) > 0:
-                # StateTraj is np.array([px, py]) where px and py are lists of points
                 px, py = node.StateTraj[0], node.StateTraj[1]
-                
-                # Calculate time increment for each point in trajectory
                 time_start = node.parent.time if node.parent else 0
                 time_end = node.time
                 num_points = len(px)
                 
-                # Add all trajectory points (in reverse order since we're going backwards)
                 for i in range(len(px)-1, -1, -1):
-                    # Interpolate time for this point
                     t = time_start + (time_end - time_start) * (i / max(num_points-1, 1))
                     path.append([px[i], py[i], t])
-            else:
-                # Fallback to just node position if no StateTraj
-                path.append([node.x, node.y, node.time])
             
-            u_path.extend(node.u_parent_to_current)
+            if node.u_parent_to_current:
+                u_path.extend(node.u_parent_to_current)
             node = node.parent
         
-        # Add start position
         if node:
             path.append([node.x, node.y, node.time])
         
