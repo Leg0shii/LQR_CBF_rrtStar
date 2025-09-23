@@ -1,7 +1,5 @@
 import math
 import numpy as np
-import os
-import sys
 
 import env
 from rrt import Node
@@ -116,12 +114,10 @@ class Utils:
         # Sample along the path
         num_samples = 20
         for s in np.linspace(0, 1, num_samples):
-            # Interpolate position and time
             t = t_start + s * (t_end - t_start)
             x = node_start.x + s * (node_end.x - node_start.x)
             y = node_start.y + s * (node_end.y - node_start.y)
             
-            # Check each dynamic obstacle at time t
             for obs in initial_dynamic_obstacles:
                 if len(obs) >= 5:
                     x_obs_0, y_obs_0, r, vx, vy = obs[:5]
@@ -130,7 +126,7 @@ class Utils:
                     y_obs = y_obs_0 + vy * t
 
                     speed = math.sqrt(vx**2 + vy**2)
-                    safety_margin = 1.0 + 0.3 * speed
+                    safety_margin = 1.0 + 0.2 * speed
                     
                     dist = math.hypot(x - x_obs, y - y_obs)
                     if dist < r + safety_margin:

@@ -1,21 +1,16 @@
-import os
 import sys
 import math
-from matplotlib import animation, patches
 import numpy as np
-import time
-import timeit
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KernelDensity
 
 import pathlib
 
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
-import env, plotting, utils, Queue
+import env, plotting, utils
 from LQR_planning import LQRPlanner
 
 import copy
-import time
 
 """
 LQR_CBF_RRT_star 2D
@@ -99,18 +94,20 @@ class LQRrrtStar:
         self.bandwidth_adap = 1.5
         self.rho = 0.3
         self.step_size = 0.3
-        self.plot_pdf_kde = True
+        self.plot_pdf_kde = False
 
+        self.show_animation = False
         self.initial_dynamic_obs = copy.deepcopy(self.env.dynamic_obs_circle)
         self.lqr_planner.cbf_rrt_simulation.dynamic_obstacles = self.initial_dynamic_obs
         self.utils.dynamic_obs_circle = self.initial_dynamic_obs
         
+        self.nominal_velocity = 5.0
+        self.dt = 0.05
         self.planning_time = 0.0
-        self.dt_per_iteration = 0.05  # Time step per planning iteration
 
     def planning(self):
         for k in range(self.iter_max):
-            self.planning_time += self.dt_per_iteration
+            self.planning_time = k * self.dt
 
             # Generate random node
             node_rand = self.generate_random_node(self.goal_sample_rate)
@@ -118,14 +115,15 @@ class LQRrrtStar:
 
             node_near = self.nearest_neighbor(self.vertex, node_rand)
 
+            # Calculate time for new node based on distance and velocity
             dist_to_new = math.hypot(node_rand.x - node_near.x, node_rand.y - node_near.y)
-            time_to_reach = min(dist_to_new, self.step_len) / 5.0  # Assuming velocity of 5
+            time_to_reach = min(dist_to_new, self.step_len) / self.nominal_velocity
             node_rand.time = node_near.time + time_to_reach
 
             node_new = self.LQR_steer(node_near, node_rand)
 
             if k % 100 == 0:
-                print(f"Iteration: {k}")
+                print(f"Iteration: {k}, Time: {self.planning_time:.2f}s")
 
             if node_new and not self.utils.is_collision_with_dynamic_predicted(node_near, node_new, self.initial_dynamic_obs):
                 neighbor_index = self.find_near_neighbor(node_new)
@@ -163,7 +161,6 @@ class LQRrrtStar:
                         g_node.cost = g_node.cost + g_node_adap.cost
                         g_node.StateTraj = np.flip(g_node.StateTraj)
                         self.Vg_leaves.append(g_node)
-            # <<< End extend to the goal
 
         index = self.search_goal_parent()
 
@@ -174,13 +171,15 @@ class LQRrrtStar:
         self.path, self.u_path = self.extract_path(self.vertex[index])
 
         final_cost = self.path_cost(self.path)
-        print("optimal distance cost", final_cost)
+        print(f"Optimal distance cost: {final_cost:.2f}")
+        print(f"Path duration: {self.path[0][2]:.2f}s")  # Goal is at index 0 in reversed path
 
-        self.plotting.animation_dynamic(
-            self,
-            "LQR-CBF-RRT* with Dynamic Obstacles",
-            self.initial_dynamic_obs
-        )
+        if self.show_animation:
+            self.plotting.animation_dynamic(
+                self,
+                "LQR-CBF-RRT* with Dynamic Obstacles",
+                self.initial_dynamic_obs
+            )
 
     def sample_path(self, wx, wy, u_sequence, step=0.2):
         # smooth path
@@ -217,9 +216,7 @@ class LQRrrtStar:
         node_goal.x = node_start.x + dist * math.cos(theta)
         node_goal.y = node_start.y + dist * math.sin(theta)
 
-        estimated_time = dist / 5.0
-
-        wx, wy, _, _, u_sequence = self.lqr_planner.lqr_planning(
+        wx, wy, _, can_reach, u_sequence = self.lqr_planner.lqr_planning(
             node_start.x,
             node_start.y,
             node_goal.x,
@@ -229,19 +226,26 @@ class LQRrrtStar:
             solve_QP=self.solve_QP,
         )
 
-        px, py, traj_cost, u_sequence_cost = self.sample_path(wx, wy, u_sequence)
-
-        if len(wx) == 1:
+        if len(wx) <= 1:  # No progress made
             return None
-
-        node_new = Node((wx[-1], wy[-1]), node_start.time + estimated_time)
+            
+        # Accept whatever distance LQR achieved
+        actual_end_x, actual_end_y = wx[-1], wy[-1]
+        actual_dist = math.hypot(actual_end_x - node_start.x, actual_end_y - node_start.y)
+        
+        actual_time = actual_dist / self.nominal_velocity
+        
+        px, py, traj_cost, u_sequence_cost = self.sample_path(wx, wy, u_sequence)
+        
+        # Create node at the ACTUAL end position with correct time
+        node_new = Node((actual_end_x, actual_end_y), node_start.time + actual_time)
         node_new.parent = node_start
-        # calculate cost of each new_node
         node_new.cost = (
             node_start.cost + sum(abs(c) for c in traj_cost) + u_sequence_cost
         )
-        node_new.StateTraj = np.array([px, py])  # Will be needed for adaptive sampling
+        node_new.StateTraj = np.array([px, py])
         node_new.u_parent_to_current = u_sequence
+        
         return node_new
 
     def cal_LQR_new_cost(self, node_start, node_goal, cbf_check=True):
@@ -252,11 +256,12 @@ class LQRrrtStar:
             node_goal.y,
             show_animation=False,
             cbf_check=cbf_check,
+            current_time=node_start.time,
             solve_QP=self.solve_QP,
         )
         px, py, traj_cost, u_sequence_cost = self.sample_path(wx, wy, u_sequence)
         if wx is None:
-            return float("inf"), False
+            return float("inf"), False, None
         return (
             node_start.cost + sum(abs(c) for c in traj_cost) + u_sequence_cost,
             can_reach,
@@ -265,7 +270,7 @@ class LQRrrtStar:
 
     def LQR_choose_parent(self, node_new, neighbor_index):
         cost = []
-        u_neighbor = []  # store u_sequence of neighbor nodes
+        u_neighbor = []
         for i in neighbor_index:
 
             # check if neighbor_node can reach node_new
@@ -275,12 +280,13 @@ class LQRrrtStar:
                 node_new.x,
                 node_new.y,
                 show_animation=False,
+                current_time=self.vertex[i].time,
                 solve_QP=self.solve_QP,
             )
 
             if can_reach and not self.utils.is_collision_with_dynamic_predicted(
                 self.vertex[i], node_new, self.initial_dynamic_obs
-            ):  # collision check should be updated if using CBF
+            ):
                 update_cost, _, u_sequence = self.cal_LQR_new_cost(
                     self.vertex[i], node_new
                 )
@@ -292,7 +298,6 @@ class LQRrrtStar:
         min_cost = min(cost)
 
         if min_cost == float("inf"):
-            print("There is no good path.(min_cost is inf)")
             return None
 
         neighbor_index_with_minimum_cost = np.argmin(cost)
@@ -306,28 +311,43 @@ class LQRrrtStar:
     def rewire(self, node_new, neighbor_index):
         for i in neighbor_index:
             node_neighbor = self.vertex[i]
-
-            # check collision and LQR reachabilty
+            
             if not self.utils.is_collision_with_dynamic_predicted(node_new, node_neighbor, self.initial_dynamic_obs):
-                new_cost, can_rach, u_sequence = self.cal_LQR_new_cost(
-                    node_new, node_neighbor
+                # Get full path from LQR planner
+                wx, wy, _, can_reach, u_sequence = self.lqr_planner.lqr_planning(
+                    node_new.x, node_new.y,
+                    node_neighbor.x, node_neighbor.y,
+                    show_animation=False,
+                    current_time=node_new.time,
+                    solve_QP=self.solve_QP
                 )
+                
+                if can_reach and wx is not None:
+                    px, py, traj_cost, u_sequence_cost = self.sample_path(wx, wy, u_sequence)
+                    new_cost = node_new.cost + sum(abs(c) for c in traj_cost) + u_sequence_cost
+                    
+                    if node_neighbor.cost > new_cost:
+                        node_neighbor.parent = node_new
+                        node_neighbor.cost = new_cost
+                        node_neighbor.StateTraj = np.array([px, py])  # Store trajectory
+                        node_neighbor.u_parent_to_current = u_sequence
+                        
+                        # Update time
+                        dist = math.hypot(node_neighbor.x - node_new.x, node_neighbor.y - node_new.y)
+                        node_neighbor.time = node_new.time + dist / self.nominal_velocity
+                        
+                        self.updateTimesAndCosts(node_neighbor)
 
-                if can_rach and node_neighbor.cost > new_cost:
-                    node_neighbor.parent = node_new
-                    node_neighbor.cost = new_cost
-                    # Rewiring update the control steers from node_new -> node_neighbor
-                    node_neighbor.u_parent_to_current = u_sequence
-                    self.updateCosts(node_neighbor)
-
-    def updateCosts(self, node):
+    def updateTimesAndCosts(self, node):
         for ich in node.childrenNodeInds:
-            self.vertex[ich].cost = self.cal_LQR_new_cost(
-                node, self.vertex[ich], cbf_check=False
-            )[
-                0
-            ]  # FIXME since we already know that this path is safe, we only need to compute the cost
-            self.updateCosts(self.vertex[ich])
+            child = self.vertex[ich]
+            
+            child.cost = self.cal_LQR_new_cost(node, child, cbf_check=False)[0]
+            
+            dist = math.hypot(child.x - node.x, child.y - node.y)
+            child.time = node.time + dist / self.nominal_velocity
+            
+            self.updateTimesAndCosts(child)
 
     def search_goal_parent(self):
         dist_list = [
@@ -339,14 +359,28 @@ class LQRrrtStar:
             return None
 
         if len(node_index) > 0:
-            cost_list = [
-                dist_list[i] + self.vertex[i].cost
-                for i in node_index
+            valid_indices = []
+            for i in node_index:
+                dist_to_goal = dist_list[i]
+                time_to_goal = dist_to_goal / self.nominal_velocity
+                goal_time = self.vertex[i].time + time_to_goal
+                
+                temp_goal = Node((self.s_goal.x, self.s_goal.y), goal_time)
+                
                 if not self.utils.is_collision_with_dynamic_predicted(
-                    self.vertex[i], self.s_goal, self.initial_dynamic_obs  # Use initial!
-                )
+                    self.vertex[i], temp_goal, self.initial_dynamic_obs
+                ):
+                    valid_indices.append(i)
+            
+            if not valid_indices:
+                return None
+            
+            # Find the minimum cost among valid paths
+            cost_list = [
+                dist_list[i] + self.vertex[i].cost for i in valid_indices
             ]
-            return node_index[int(np.argmin(cost_list))]
+            
+            return valid_indices[int(np.argmin(cost_list))]
 
         return len(self.vertex) - 1
 
@@ -540,15 +574,6 @@ class LQRrrtStar:
                     self.KDE_fitSamples = kde  # This kde object will be used to sample form whn the optimal sampling distribution has been reached
 
             self.KDE_pre_gridProbs = grid_probs
-            # Save the grid points with the corresponding probs, the cost, and the tree to plot them afterwards:
-            # saveData(self.goal_costToCome_list, 'adapCBF_RRTstr_Cost', suffix=self.suffix, CBF_RRT_strr_obj=self,
-            #          adapDist_iter=self.adapIter-1, enFlag=False)
-
-            # saveData([self.TreeT,self.vg_minCostToCome_list], 'adapCBF_RRTstr_Tree_CDC', suffix=self.suffix, CBF_RRT_strr_obj=self,
-            #          adapDist_iter=self.adapIter - 1, enFlag=False)
-            # saveData([Xxgrid, Xygrid, grid_probs.reshape(Xxgrid.shape),elite_samples_arr], 'adapCBF_RRTstr_KDEgridProbs_CDC',
-            #          suffix=self.suffix, CBF_RRT_strr_obj=self,
-            #          adapDist_iter=self.adapIter - 1, enFlag=False)
 
             # Plot the distribution
             if self.plot_pdf_kde:
@@ -602,40 +627,120 @@ class LQRrrtStar:
             int(np.argmin([math.hypot(nd.x - n.x, nd.y - n.y) for nd in node_list]))
         ]
 
-    def extract_path(self, node_end):
+    def extract_path_simple(self, node_end):
+        """
+        Path extraction with goal connection and debugging.
+        """
+        nodes = []
+        node = node_end
+        visited = set()
+        
+        while node is not None:
+            node_id = id(node)
+            if node_id in visited:
+                print(f"WARNING: Circular reference detected!")
+                break
+            visited.add(node_id)
+            nodes.append(node)
+            node = node.parent
+            
+            if len(nodes) > 10000:
+                break
+        
+        if not nodes:
+            return [], []
+        
         path = []
         u_path = []
-        node = node_end
         
-        path.append([self.s_goal.x, self.s_goal.y, node_end.time + 1.0])
+        print(f"\nDEBUG: Building path from {len(nodes)} nodes")
+        print("Checking for discontinuities in tree structure:")
         
-        num_interp_points = 20
-        for i in range(num_interp_points, 0, -1):
-            alpha = i / float(num_interp_points)
-            x_interp = node_end.x * alpha + self.s_goal.x * (1 - alpha)
-            y_interp = node_end.y * alpha + self.s_goal.y * (1 - alpha)
-            t_interp = node_end.time + (1 - alpha)
-            path.append([x_interp, y_interp, t_interp])
-        
-        while node.parent is not None:
-            if node.StateTraj is not None and len(node.StateTraj) > 0:
-                px, py = node.StateTraj[0], node.StateTraj[1]
-                time_start = node.parent.time if node.parent else 0
-                time_end = node.time
-                num_points = len(px)
-                
-                for i in range(len(px)-1, -1, -1):
-                    t = time_start + (time_end - time_start) * (i / max(num_points-1, 1))
-                    path.append([px[i], py[i], t])
+        for i in range(len(nodes) - 1):
+            child = nodes[i]
+            parent = nodes[i + 1]
+            dist = math.hypot(child.x - parent.x, child.y - parent.y)
+            time_diff = abs(child.time - parent.time) if hasattr(child, 'time') and hasattr(parent, 'time') else 0
             
-            if node.u_parent_to_current:
-                u_path.extend(node.u_parent_to_current)
-            node = node.parent
+            if dist > self.step_len * 1.5:
+                print(f"  Large spatial jump: {dist:.2f}m between nodes {i} and {i+1}")
+                print(f"    Child: ({child.x:.1f}, {child.y:.1f}) at t={child.time:.2f}")
+                print(f"    Parent: ({parent.x:.1f}, {parent.y:.1f}) at t={parent.time:.2f}")
+            
+            if time_diff > 5.0:  # More than 5 seconds is suspicious
+                print(f"  Large time jump: {time_diff:.2f}s between nodes {i} and {i+1}")
         
-        if node:
+        # ADD CONNECTION TO ACTUAL GOAL FIRST
+        first_node = nodes[0]
+        dist_to_goal = math.hypot(self.s_goal.x - first_node.x, self.s_goal.y - first_node.y)
+        
+        if dist_to_goal > 0.1:
+            time_to_goal = dist_to_goal / self.nominal_velocity
+            goal_time = first_node.time + time_to_goal
+            
+            path.append([self.s_goal.x, self.s_goal.y, goal_time])
+            print(f"Added connection to actual goal: distance={dist_to_goal:.2f}m, time={time_to_goal:.2f}s")
+        
+        for i, node in enumerate(nodes):
             path.append([node.x, node.y, node.time])
+            
+            if i > 0:
+                prev = nodes[i-1]
+                dist = math.hypot(node.x - prev.x, node.y - prev.y)
+                time_diff = abs(node.time - prev.time)
+                implied_velocity = dist / time_diff if time_diff > 0 else float('inf')
+                
+                if implied_velocity > 10.0:
+                    print(f"  WARNING: Implied velocity {implied_velocity:.1f} m/s at node {i}")
+                    print(f"    Distance: {dist:.2f}m, Time diff: {time_diff:.3f}s")
+            
+            if hasattr(node, 'u_parent_to_current') and node.u_parent_to_current:
+                u_path.extend(node.u_parent_to_current)
         
-        return path, u_path[::-1]
+        print(f"Path summary:")
+        print(f"  Total nodes: {len(path)}")
+        print(f"  Start: ({path[-1][0]:.1f}, {path[-1][1]:.1f}) at t={path[-1][2]:.2f}s")
+        print(f"  Goal: ({path[0][0]:.1f}, {path[0][1]:.1f}) at t={path[0][2]:.2f}s")
+        print(f"  Total time: {path[0][2] - path[-1][2]:.2f}s")
+        
+        return path, u_path
+    
+    def extract_path(self, node_end):
+        """
+        Extract path with interpolation between nodes for smooth animation.
+        """
+        simple_path, u_path = self.extract_path_simple(node_end)
+        
+        if len(simple_path) < 2:
+            return simple_path, u_path
+        
+        interpolated_path = []
+        interpolation_distance = 1.0
+        
+        for i in range(len(simple_path) - 1):
+            p1 = simple_path[i]
+            p2 = simple_path[i + 1]
+            
+            interpolated_path.append(p1)
+            
+            dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+            
+            if dist > interpolation_distance:
+                num_intermediate = int(dist / interpolation_distance)
+                
+                for j in range(1, num_intermediate + 1):
+                    alpha = j / (num_intermediate + 1)
+                    x = p1[0] + alpha * (p2[0] - p1[0])
+                    y = p1[1] + alpha * (p2[1] - p1[1])
+                    t = p1[2] + alpha * (p2[2] - p1[2])
+                    interpolated_path.append([x, y, t])
+        
+        if simple_path:
+            interpolated_path.append(simple_path[-1])
+        
+        print(f"Interpolated path: {len(simple_path)} waypoints -> {len(interpolated_path)} points")
+        
+        return interpolated_path, u_path
 
     @staticmethod
     def path_cost(path):
@@ -645,6 +750,7 @@ class LQRrrtStar:
         for i in range(1, len(path)):
             dest = path[i]
             cost += math.hypot(dest[0] - src[0], dest[1] - src[1])
+            src = dest
         return cost
 
     @staticmethod
@@ -653,22 +759,22 @@ class LQRrrtStar:
         dy = node_end.y - node_start.y
         return math.hypot(dx, dy), math.atan2(dy, dx)
 
+
 def main():
     x_start = (45, 24)
     x_goal = (2, 2)
 
-    # Create planner
     rrt_star = LQRrrtStar(
         x_start, x_goal, 
-        step_len=10, 
-        goal_sample_rate=0.10, 
-        search_radius=20, 
-        iter_max=2000, 
+        step_len=10,
+        goal_sample_rate=0.15,
+        search_radius=20,
+        iter_max=2000,
         AdSamplingFlag=False,
-        solve_QP=False  # Set to True to use QP solver
+        solve_QP=False
     )
 
-    # Plan path
+    rrt_star.show_animation = True
     rrt_star.planning()
 
 

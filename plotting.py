@@ -6,12 +6,9 @@ Plotting tools for Sampling-based algorithms
 from matplotlib import animation
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import os
-import sys
 
 import numpy as np
 import env
-from linear_dynamic_model.LQR_CBF_rrtStar_linear import LQRrrtStar
 
 
 class Plotting:
@@ -118,43 +115,36 @@ class Plotting:
         plt.show()
 
     @staticmethod
-    def animation_dynamic(rrt_star: LQRrrtStar, name, dynamic_obs_initial):
+    def animation_dynamic(rrt_star, name, dynamic_obs_initial):
         """Animation showing robot following path with moving obstacles"""
         fig, ax = plt.subplots(figsize=(12, 8))
         nodelist = rrt_star.vertex
         path = rrt_star.path
         
-        # Plot boundaries
         for ox, oy, w, h in rrt_star.obs_boundary:
             ax.add_patch(patches.Rectangle((ox, oy), w, h, edgecolor="black", facecolor="black"))
 
-        # Plot static obstacles
         for ox, oy, r in rrt_star.obs_circle:
             ax.add_patch(patches.Circle((ox, oy), r, edgecolor="black", facecolor="gray", alpha=0.7))
 
-        # Plot tree
         for node in nodelist:
             if node.parent:
                 ax.plot([node.parent.x, node.x], [node.parent.y, node.y], "-g", alpha=0.2, linewidth=0.5)
 
-        # Plot solution path
         if path:
             path_x = [x[0] for x in path]
             path_y = [x[1] for x in path]
             ax.plot(path_x, path_y, "-r", linewidth=2, label="Solution Path")
 
-        # Plot start and goal
         ax.plot(rrt_star.s_start.x, rrt_star.s_start.y, "gs", markersize=10, label="Start")
         ax.plot(rrt_star.s_goal.x, rrt_star.s_goal.y, "rs", markersize=10, label="Goal")
 
-        # Create robot
         robot_circle = None
         if path:
             path_reversed = path[::-1]
             robot_circle = patches.Circle((path_reversed[0][0], path_reversed[0][1]), 0.5, color='blue', alpha=0.8, zorder=5)
             ax.add_patch(robot_circle)
 
-        # Create dynamic obstacles
         dynamic_circles = []
         if dynamic_obs_initial:
             for x, y, r, vx, vy in dynamic_obs_initial:
@@ -187,13 +177,11 @@ class Plotting:
                 robot_x, robot_y = path_reversed[0][0], path_reversed[0][1]
 
                 for i in range(len(path_reversed) - 1):
-                    # If path has time info (3 elements), use it
                     if len(path_reversed[i]) >= 3:
                         t1 = path_reversed[i][2]
                         t2 = path_reversed[i+1][2]
                         
                         if t1 <= current_time <= t2:
-                            # Interpolate between nodes based on time
                             alpha = (current_time - t1) / (t2 - t1) if t2 != t1 else 0
                             robot_x = path_reversed[i][0] * (1-alpha) + path_reversed[i+1][0] * alpha
                             robot_y = path_reversed[i][1] * (1-alpha) + path_reversed[i+1][1] * alpha
@@ -204,14 +192,12 @@ class Plotting:
                 
                 robot_circle.center = (robot_x, robot_y)
             
-            # Use stored obstacle positions if available, otherwise simulate
             for i, (x0, y0, r, vx, vy) in enumerate(dynamic_obs_initial):
                 new_x = x0 + vx * current_time
                 new_y = y0 + vy * current_time
                 if i < len(dynamic_circles):
                     dynamic_circles[i].center = (new_x, new_y)
             
-            # Check collisions visually
             collision_detected = False
             if 'robot_x' in locals() and dynamic_circles:
                 for circle in dynamic_circles:
