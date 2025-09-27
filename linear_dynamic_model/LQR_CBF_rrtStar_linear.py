@@ -769,9 +769,9 @@ def main():
         step_len=10,
         goal_sample_rate=0.15,
         search_radius=20,
-        iter_max=2000,
+        iter_max=1500,
         AdSamplingFlag=False,
-        solve_QP=False
+        solve_QP=True
     )
 
     rrt_star.show_animation = True

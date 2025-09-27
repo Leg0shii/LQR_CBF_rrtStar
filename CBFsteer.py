@@ -263,6 +263,85 @@ class CBF_RRT:
             u = self.solution[0].x
 
             return np.array([v, u]).reshape(2, 1)
+        
+    def QP_controller_with_prediction(self, x_current, u_ref, model="linear", current_time=0.0):
+        """
+        QP controller that handles both static and dynamic obstacles with prediction
+        
+        Args:
+            x_current: Current state
+            u_ref: Reference control input
+            model: System model type
+            current_time: Current time for predicting dynamic obstacle positions
+        """
+        if model == "linear":
+            self.m = Model("CBF_CLF_QP_Linear_Dynamic")
+            x1 = x_current[0, 0] if isinstance(x_current, np.ndarray) and x_current.ndim > 1 else x_current[0]
+            x2 = x_current[1, 0] if isinstance(x_current, np.ndarray) and x_current.ndim > 1 else x_current[1]
+            
+            self.m.remove(self.m.getConstrs())
+            
+            u1_ref = u_ref[0, 0] if isinstance(u_ref, np.ndarray) and u_ref.ndim > 1 else u_ref[0]
+            u2_ref = u_ref[1, 0] if isinstance(u_ref, np.ndarray) and u_ref.ndim > 1 else u_ref[1]
+            
+            # Control actuator constraints
+            self.u1 = self.m.addVar(
+                lb=self.u1_lower_lim,
+                ub=self.u1_upper_lim,
+                vtype=GRB.CONTINUOUS,
+                name="velocity_constraint_x1"
+            )
+            self.u2 = self.m.addVar(
+                lb=self.u2_lower_lim,
+                ub=self.u2_upper_lim,
+                vtype=GRB.CONTINUOUS,
+                name="velocity_constraint_x2"
+            )
+            
+            # Cost function
+            self.cost_func = (self.u1 - u1_ref) * (self.u1 - u1_ref) + (self.u2 - u2_ref) * (self.u2 - u2_ref)
+            self.m.setObjective(self.cost_func, GRB.MINIMIZE)
+            
+            # Static obstacles
+            for i in range(len(self.x_obstacle)):
+                h = ((x1 - self.x_obstacle[i][0]) ** 2 + 
+                    (x2 - self.x_obstacle[i][1]) ** 2 - 
+                    self.x_obstacle[i][2] ** 2)
+                
+                lgh = (2 * (x1 - self.x_obstacle[i][0]) * self.u1 + 
+                    2 * (x2 - self.x_obstacle[i][1]) * self.u2)
+                
+                self.m.addConstr((lgh + self.k_cbf * h**self.p_cbf) >= 0)
+            
+            # Dynamic obstacles with prediction
+            for dyn_obs in self.dynamic_obstacles:
+                if len(dyn_obs) >= 5:
+                    x_obs_0, y_obs_0, r, vx, vy = dyn_obs[:5]
+                    
+                    # Predict obstacle position at current time
+                    x_obs_t = x_obs_0 + vx * current_time
+                    y_obs_t = y_obs_0 + vy * current_time
+                    
+                    h = (x1 - x_obs_t) ** 2 + (x2 - y_obs_t) ** 2 - r ** 2
+                    
+                    # CBF constraint accounting for relative motion
+                    # The derivative includes both robot motion and obstacle motion
+                    lgh = (2 * (x1 - x_obs_t) * (self.u1 - vx) + 
+                        2 * (x2 - y_obs_t) * (self.u2 - vy))
+                    
+                    self.m.addConstr((lgh + self.k_cbf * h**self.p_cbf) >= 0)
+            
+            self.m.Params.LogToConsole = 0
+            self.m.optimize()
+            
+            if self.m.status == GRB.Status.OPTIMAL:
+                solution = self.m.getVars()
+                u1 = solution[0].x
+                u2 = solution[1].x
+                return np.array([[u1], [u2]])
+            else:
+                # If infeasible, return reference control (or could return zeros)
+                return u_ref
 
     def find_knn_obstacle(self, x_current, x_obstacles, k):
         """

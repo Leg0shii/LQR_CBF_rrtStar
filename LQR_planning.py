@@ -76,7 +76,9 @@ class LQRPlanner:
 
             if solve_QP:
                 try:
-                    u = self.cbf_rrt_simulation.QP_controller(x, u, model="linear")
+                    u = self.cbf_rrt_simulation.QP_controller_with_prediction(
+                        x, u, model="linear", current_time=current_time + time
+                    )
                 except:
                     print("infeasible")
                     break

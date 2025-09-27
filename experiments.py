@@ -1,4 +1,9 @@
+import contextlib
+import csv
+import io
 import math
+import sys
+import time
 import numpy as np
 from scipy import stats
 import random
@@ -18,6 +23,26 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+os.environ['GUROBI_LOG_LEVEL'] = '0'
+logging.getLogger('gurobipy').setLevel(logging.ERROR)
+
+
+# Suppress all Gurobi output
+@contextlib.contextmanager
+def suppress_stdout():
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+
+# Import Gurobi silently
+with suppress_stdout():
+    import gurobipy as gp
+    # Set Gurobi to quiet mode globally
+    gp.setParam('OutputFlag', 0)
 
 def save_collision_trajectory(rollout_num, path, dynamic_obstacles, collision_info, x_start, x_goal, timestamp=None):
     """
@@ -152,7 +177,7 @@ def is_point_feasible(point, dynamic_obstacles, static_margin=2.0):
     
     return True
 
-def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
+def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True, save_rq2_data=False):
     """
     Run multiple rollouts to determine collision rate with 95% confidence interval
     """
@@ -167,6 +192,7 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
     logging.info(f"Starting experiment with {num_rollouts} rollouts, max_speed={max_speed} m/s")
     logging.info(f"Experiment timestamp: {experiment_timestamp}")
     
+    rq2_data = [] if save_rq2_data else None
     for rollout in range(num_rollouts):
         rollout_header = f"\n--- ROLLOUT {rollout + 1}/{num_rollouts} ---"
         print(rollout_header)
@@ -273,8 +299,16 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
             step_len=10, 
             goal_sample_rate=0.10, 
             search_radius=20, 
-            iter_max=1500
+            iter_max=1500,
+            solve_QP=cbf_enabled
         )
+
+        if not cbf_enabled:
+            original_lqr_planning = rrt_star.lqr_planner.lqr_planning
+            def modified_lqr_planning(sx, sy, gx, gy, test_LQR=False, show_animation=True, cbf_check=True, solve_QP=False, current_time=0.0, time_horizon=0.5):
+                return original_lqr_planning(sx, sy, gx, gy, test_LQR=test_LQR, show_animation=show_animation, cbf_check=False, solve_QP=False, current_time=current_time, time_horizon=time_horizon)
+            
+            rrt_star.lqr_planner.lqr_planning = modified_lqr_planning
         
         # Override the dynamic obstacles
         rrt_star.env.dynamic_obs_circle = dynamic_obstacles
@@ -284,6 +318,7 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
         
         index = None
         nodes_added = 0
+        t0 = time.perf_counter()
         for k in range(rrt_star.iter_max):
             rrt_star.planning_time += rrt_star.dt
             node_rand = rrt_star.generate_random_node(rrt_star.goal_sample_rate)
@@ -307,6 +342,7 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
                     rrt_star.rewire(node_new, neighbor_index)
         
         planning_msg = f"Planning: {nodes_added} nodes added, tree size: {len(rrt_star.vertex)}"
+        planning_time_ms = (time.perf_counter() - t0) * 1000
         print(planning_msg)
         logging.info(planning_msg)
         
@@ -379,6 +415,16 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0):
             result_msg = f"Result: SUCCESS"
             print(result_msg)
             logging.info(result_msg)
+
+        if save_rq2_data:
+            rq2_data.append({
+                'rollout': rollout,
+                'cbf': int(cbf_enabled),
+                'T_ms': planning_time_ms,
+                'J': rrt_star.path_cost(path) if path else float('inf'),
+                'success': int(index is not None),
+                'nodes': len(rrt_star.vertex)
+            })
         
         del rrt_star
         if rollout % 10 == 0:
@@ -433,6 +479,13 @@ Verdict: {'PASSED' if upper_bound < 0.01 else 'FAILED'}: 95% upper bound {'is be
     
     print(results)
     logging.info(results)
+
+    if save_rq2_data:
+        with open(f'rq2_data_cbf{int(cbf_enabled)}.csv', 'w') as f:
+            writer = csv.DictWriter(f, fieldnames=['rollout', 'cbf', 'T_ms', 'J', 'success', 'nodes'])
+            writer.writeheader()
+            for row in rq2_data:
+                writer.writerow(row)
     
     return collision_rate, lower_bound, upper_bound, collision_details
 
@@ -493,7 +546,27 @@ def check_path_for_collisions_detailed(path, dynamic_obstacles):
     return False, None
 
 if __name__ == "__main__":
-    collision_rate, lower, upper, details = run_collision_experiment(
-        num_rollouts=3000,
-        max_speed=1.0
-    )
+    if True:
+        # RQ2: Run same scenarios with CBF ON and OFF
+        print("Running RQ2 comparison...")
+        
+        random.seed(42)
+        np.random.seed(42)
+        
+        # CBF ON
+        run_collision_experiment(num_rollouts=100, cbf_enabled=True, save_rq2_data=True)
+        
+        # Reset seed for identical scenarios
+        random.seed(42)
+        np.random.seed(42)
+        
+        run_collision_experiment(num_rollouts=100, cbf_enabled=False, save_rq2_data=True)
+        
+        print("RQ2 data saved to rq2_data_cbf1.csv and rq2_data_cbf0.csv")
+    else:
+        # RQ1: Original collision rate analysis
+        collision_rate, lower, upper, details = run_collision_experiment(
+            num_rollouts=3000,
+            max_speed=1.0,
+            cbf_enabled=True
+        )
