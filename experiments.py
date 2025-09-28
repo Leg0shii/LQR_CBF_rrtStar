@@ -1,6 +1,7 @@
 import contextlib
 import csv
 import io
+import itertools
 import math
 import sys
 import time
@@ -177,7 +178,7 @@ def is_point_feasible(point, dynamic_obstacles, static_margin=2.0):
     
     return True
 
-def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True, save_rq2_data=False):
+def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True, save_rq2_data=False, save_rq3_data=False, alpha=None, v_nom=5.0, step_len=10):
     """
     Run multiple rollouts to determine collision rate with 95% confidence interval
     """
@@ -193,6 +194,7 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True,
     logging.info(f"Experiment timestamp: {experiment_timestamp}")
     
     rq2_data = [] if save_rq2_data else None
+    rq3_data = [] if save_rq3_data else None
     for rollout in range(num_rollouts):
         rollout_header = f"\n--- ROLLOUT {rollout + 1}/{num_rollouts} ---"
         print(rollout_header)
@@ -296,14 +298,19 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True,
         
         rrt_star = LQRrrtStar(
             x_start, x_goal, 
-            step_len=10, 
+            step_len=step_len, 
             goal_sample_rate=0.10, 
             search_radius=20, 
             iter_max=1500,
-            solve_QP=cbf_enabled
+            solve_QP=cbf_enabled and save_rq2_data
         )
 
-        if not cbf_enabled:
+        if save_rq3_data and alpha is not None:
+            rrt_star.lqr_planner.cbf_rrt_simulation.k_cbf = alpha
+        if save_rq3_data and v_nom is not None:
+            rrt_star.nominal_velocity = v_nom
+
+        if not cbf_enabled and save_rq2_data:
             original_lqr_planning = rrt_star.lqr_planner.lqr_planning
             def modified_lqr_planning(sx, sy, gx, gy, test_LQR=False, show_animation=True, cbf_check=True, solve_QP=False, current_time=0.0, time_horizon=0.5):
                 return original_lqr_planning(sx, sy, gx, gy, test_LQR=test_LQR, show_animation=show_animation, cbf_check=False, solve_QP=False, current_time=current_time, time_horizon=time_horizon)
@@ -326,7 +333,7 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True,
             node_near = rrt_star.nearest_neighbor(rrt_star.vertex, node_rand)
             
             dist_to_new = math.hypot(node_rand.x - node_near.x, node_rand.y - node_near.y)
-            time_to_reach = min(dist_to_new, rrt_star.step_len) / 5.0
+            time_to_reach = min(dist_to_new, rrt_star.step_len) / v_nom
             node_rand.time = node_near.time + time_to_reach
             
             node_new = rrt_star.LQR_steer(node_near, node_rand)
@@ -425,6 +432,14 @@ def run_collision_experiment(num_rollouts=3000, max_speed=1.0, cbf_enabled=True,
                 'success': int(index is not None),
                 'nodes': len(rrt_star.vertex)
             })
+
+        if save_rq3_data:
+            min_signed_dist = calculate_min_signed_distance(path, dynamic_obstacles) if index is not None else float('inf')
+            rq3_data.append({
+                'rollout': rollout,
+                'success': int(index is not None),
+                'min_signed_dist': min_signed_dist
+            })
         
         del rrt_star
         if rollout % 10 == 0:
@@ -487,7 +502,10 @@ Verdict: {'PASSED' if upper_bound < 0.01 else 'FAILED'}: 95% upper bound {'is be
             for row in rq2_data:
                 writer.writerow(row)
     
-    return collision_rate, lower_bound, upper_bound, collision_details
+    if save_rq3_data:
+        return collision_rate, lower_bound, upper_bound, collision_details, rq3_data
+    else:
+        return collision_rate, lower_bound, upper_bound, collision_details
 
 def check_path_for_collisions_detailed(path, dynamic_obstacles):
     """
@@ -545,28 +563,132 @@ def check_path_for_collisions_detailed(path, dynamic_obstacles):
     
     return False, None
 
+def calculate_min_signed_distance(path, dynamic_obstacles):
+    """
+    Calculate minimum signed distance along path.
+    Positive = safe distance, Negative = collision/penetration
+    """
+    if not path:
+        return float('inf')
+    
+    path_forward = path[::-1]
+    min_signed_distance = float('inf')
+    
+    for i in range(len(path_forward) - 1):
+        p1 = path_forward[i]
+        p2 = path_forward[i + 1]
+        
+        dist = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        num_interp = max(2, int(dist / 0.1))
+        
+        for j in range(num_interp + 1):
+            alpha = j / num_interp
+            x = p1[0] + alpha * (p2[0] - p1[0])
+            y = p1[1] + alpha * (p2[1] - p1[1])
+            t = p1[2] + alpha * (p2[2] - p1[2]) if len(p1) > 2 and len(p2) > 2 else 0
+            
+            for obs in dynamic_obstacles:
+                if len(obs) >= 5:
+                    x0, y0, obs_radius, vx, vy = obs[:5]
+                    obs_x = x0 + vx * t
+                    obs_y = y0 + vy * t
+                    center_dist = math.hypot(x - obs_x, y - obs_y)
+                    signed_dist = center_dist - obs_radius
+                    min_signed_distance = min(min_signed_distance, signed_dist)
+    
+    return min_signed_distance
+
+
+def run_rq3_experiments(num_rollouts=100):
+    """Run all RQ3 parameter combinations"""
+    alpha_values = [0.25, 0.5, 1.0]
+    v_nom_values = [1.5, 3.0, 5.0]
+    step_len_values = [6, 12]
+    
+    all_results = []
+    
+    for alpha, v_nom, step_len in itertools.product(alpha_values, v_nom_values, step_len_values):
+        print(f"\n=== Testing: Alpha={alpha}, V_nom={v_nom}, Step_len={step_len} ===")
+        
+        collision_rate, lower, upper, details, rq3_data = run_collision_experiment(
+            num_rollouts=num_rollouts,
+            max_speed=2.0,
+            cbf_enabled=True,
+            save_rq3_data=True,
+            alpha=alpha,
+            v_nom=v_nom,
+            step_len=step_len
+        )
+        
+        # Compute statistics from the returned data
+        success_rate = sum(row['success'] for row in rq3_data) / len(rq3_data) if rq3_data else 0
+        successful_runs = [row for row in rq3_data if row['success']]
+        min_dists = [row['min_signed_dist'] for row in successful_runs if row['min_signed_dist'] != float('inf')]
+        avg_min_dist = np.mean(min_dists) if min_dists else None
+        std_min_dist = np.std(min_dists) if min_dists else None
+        
+        result = {
+            'alpha': alpha,
+            'v_nom': v_nom, 
+            'step_len': step_len,
+            'success_rate': success_rate,
+            'collision_rate': collision_rate,
+            'avg_min_dist': avg_min_dist,
+            'std_min_dist': std_min_dist,
+            'num_success': len(successful_runs),
+            'num_total': len(rq3_data)
+        }
+        all_results.append(result)
+        
+        print(f"  Success rate: {success_rate:.2%}")
+        print(f"  Collision rate: {collision_rate:.2%}")
+        if avg_min_dist:
+            print(f"  Avg min distance: {avg_min_dist:.3f} ± {std_min_dist:.3f}")
+    
+    # Save summary
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_file = f'rq3_summary_{timestamp}.csv'
+    with open(summary_file, 'w') as f:
+        writer = csv.DictWriter(f, fieldnames=['alpha', 'v_nom', 'step_len', 'success_rate', 
+                                               'collision_rate', 'avg_min_dist', 'std_min_dist',
+                                               'num_success', 'num_total'])
+        writer.writeheader()
+        writer.writerows(all_results)
+    
+    print(f"\n=== RQ3 SUMMARY (saved to {summary_file}) ===")
+    print(f"{'Alpha':<8} {'V_nom':<8} {'Step':<8} {'Success':<12} {'Collision':<12} {'Min Dist':<20}")
+    print("-" * 70)
+    for r in all_results:
+        min_dist_str = f"{r['avg_min_dist']:.3f} ± {r['std_min_dist']:.3f}" if r['avg_min_dist'] else "N/A"
+        print(f"{r['alpha']:<8.1f} {r['v_nom']:<8.1f} {r['step_len']:<8} "
+              f"{r['success_rate']:<12.2%} {r['collision_rate']:<12.2%} {min_dist_str}")
+
+
 if __name__ == "__main__":
-    if True:
-        # RQ2: Run same scenarios with CBF ON and OFF
-        print("Running RQ2 comparison...")
-        
-        random.seed(42)
-        np.random.seed(42)
-        
-        # CBF ON
-        run_collision_experiment(num_rollouts=100, cbf_enabled=True, save_rq2_data=True)
-        
-        # Reset seed for identical scenarios
-        random.seed(42)
-        np.random.seed(42)
-        
-        run_collision_experiment(num_rollouts=100, cbf_enabled=False, save_rq2_data=True)
-        
-        print("RQ2 data saved to rq2_data_cbf1.csv and rq2_data_cbf0.csv")
-    else:
-        # RQ1: Original collision rate analysis
+    rq_num = sys.argv[1]
+    if rq_num == "1":
         collision_rate, lower, upper, details = run_collision_experiment(
             num_rollouts=3000,
             max_speed=1.0,
             cbf_enabled=True
         )
+
+    elif rq_num == "2":
+        print("Running RQ2 comparison...")
+        
+        random.seed(42)
+        np.random.seed(42)
+        run_collision_experiment(num_rollouts=100, cbf_enabled=True, save_rq2_data=True)
+        
+        random.seed(42)
+        np.random.seed(42)
+        run_collision_experiment(num_rollouts=100, cbf_enabled=False, save_rq2_data=True)
+        
+        print("RQ2 data saved to rq2_data_cbf1.csv and rq2_data_cbf0.csv")
+
+    elif rq_num == "3":
+        print("Running RQ3 parameter sensitivity analysis...")
+        run_rq3_experiments(num_rollouts=100)
+    else:
+        print(f"Unknown RQ number: {rq_num}")
+        print("Usage: python script.py [1|2|3]")
